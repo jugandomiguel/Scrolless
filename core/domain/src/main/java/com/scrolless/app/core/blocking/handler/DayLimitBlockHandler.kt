@@ -16,6 +16,7 @@
  */
 package com.scrolless.app.core.blocking.handler
 
+import com.scrolless.app.core.blocking.time.TimeProvider
 import com.scrolless.app.core.model.BlockingResult
 import timber.log.Timber
 
@@ -24,7 +25,7 @@ import timber.log.Timber
  *
  * @param timeLimit Daily time limit in milliseconds.
  */
-class DayLimitBlockHandler(private val timeLimit: Long) : BlockOptionHandler {
+class DayLimitBlockHandler(private val timeLimit: Long, private val timeProvider: TimeProvider) : BlockOptionHandler {
 
     override suspend fun shouldBlockContent(currentDailyUsage: Long): Boolean {
 
@@ -41,6 +42,14 @@ class DayLimitBlockHandler(private val timeLimit: Long) : BlockOptionHandler {
      * @return [BlockingResult.BlockNow] if should block, [BlockingResult.Continue] otherwise.
      */
     override suspend fun onPeriodicCheck(currentDailyUsage: Long, elapsedTime: Long): BlockingResult {
+        // A session that started before midnight must only charge the part that falls on today,
+        // because currentDailyUsage already covers only today. Equivalent to max(sessionStart, startOfToday).
+        val millisSinceMidnight = (timeProvider.currentTimeInMillis() - timeProvider.startOfTodayMillis()).coerceAtLeast(0L)
+        val elapsedToday = elapsedTime.coerceIn(0L, millisSinceMidnight)
+        return checkLimit(currentDailyUsage, elapsedToday)
+    }
+
+    private fun checkLimit(currentDailyUsage: Long, elapsedTime: Long): BlockingResult {
         val willExceed = (currentDailyUsage + elapsedTime) >= timeLimit
 
         // Check if crossing daily limit

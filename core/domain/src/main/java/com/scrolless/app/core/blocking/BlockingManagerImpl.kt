@@ -65,7 +65,7 @@ class BlockingManagerImpl @Inject constructor(
         BlockOption.BlockAll -> BlockAllBlockHandler(timeProvider)
 
         BlockOption.DailyLimit -> if (settings.dailyLimitMillis > 0L) {
-            DayLimitBlockHandler(settings.dailyLimitMillis)
+            DayLimitBlockHandler(settings.dailyLimitMillis, timeProvider)
         } else {
             NoBlockHandler()
         }
