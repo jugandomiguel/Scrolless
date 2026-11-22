@@ -562,8 +562,8 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         if (finished != null) {
             CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
                 try {
-                    withTimeoutOrNull(SHUTDOWN_SAVE_TIMEOUT) { saveViewing(finished) }
-                        ?: Timber.w("Saving the viewing session at shutdown timed out")
+                    // Nobody waits for this coroutine, so a timeout could only cut the save halfway.
+                    withContext(NonCancellable) { saveViewing(finished) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -972,9 +972,6 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
 
         /** How often a long visit is saved while it continues, so a killed service loses little viewing time. */
         const val CHECKPOINT_INTERVAL_MILLIS = 15_000L
-
-        /** Longest time the final save after the service is destroyed may take. */
-        val SHUTDOWN_SAVE_TIMEOUT = 2.seconds
 
         /** How long after connecting the service will bring the app back if it was waiting. */
         val WAITING_FOR_ACCESSIBILITY_WINDOW = 5.seconds
