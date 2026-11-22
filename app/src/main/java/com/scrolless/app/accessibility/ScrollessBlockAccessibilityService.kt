@@ -46,6 +46,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -55,6 +56,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
@@ -228,9 +230,13 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         }
 
         val session = viewingSession ?: return@Runnable
-        val elapsed = System.currentTimeMillis() - session.startedAtMillis
+        val now = System.currentTimeMillis()
+        val elapsed = now - session.startedAtMillis
+        // Save long visits in parts, so a killed service loses at most one interval of viewing time.
+        val checkpoint = session.checkpoint(now, CHECKPOINT_INTERVAL_MILLIS)
 
         if (isBlockingSuppressed) {
+            checkpoint?.let(::launchSaveViewing)
             // While paused or suppressed, continue scheduling so usage and timer overlay stay current.
             Timber.v(
                 "Periodic check skipped: elapsed=%d ms, paused=%b, suppressed=%b",
@@ -242,7 +248,9 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         } else {
             Timber.v("Periodic check running: elapsed=%d ms", elapsed)
             serviceScope.launch {
-                val action = blockingManager.onPeriodicCheck(elapsed)
+                // Save first: the check adds only the unsaved time to the saved usage, so both must agree.
+                checkpoint?.let { withContext(NonCancellable) { saveViewing(it) } }
+                val action = blockingManager.onPeriodicCheck(session.unsavedMillis(System.currentTimeMillis()))
                 if (viewingSession !== session) return@launch
                 when (action) {
                     is BlockingResult.BlockNow -> {
@@ -252,17 +260,21 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
 
                     is BlockingResult.CheckLater -> {
                         Timber.v("Periodic check: limit not reached, will check again later in %d ms", action.delayMillis)
-                        mainHandler.postDelayed(videoCheckRunnable, action.delayMillis)
+                        mainHandler.postDelayed(videoCheckRunnable, nextCheckDelay(session, action.delayMillis))
                     }
 
                     is BlockingResult.Continue -> {
                         Timber.v("Periodic check: limit not reached, scheduling next check")
-                        mainHandler.postDelayed(videoCheckRunnable, 10000)
+                        mainHandler.postDelayed(videoCheckRunnable, nextCheckDelay(session, 10000))
                     }
                 }
             }
         }
     }
+
+    /** Runs the next check no later than the next checkpoint is due. */
+    private fun nextCheckDelay(session: ContentSession, delayMillis: Long): Long =
+        minOf(delayMillis, session.millisUntilCheckpoint(System.currentTimeMillis(), CHECKPOINT_INTERVAL_MILLIS))
 
     /**
      * Called when the accessibility service connects and is ready to monitor apps.
@@ -481,6 +493,22 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
             "Service state at destroy: hasContentSession=%b, viewingApp=%s",
             contentSession != null, viewingSession?.app,
         )
+        // Save the visit in progress. serviceScope is cancelled below, so use a scope of its own;
+        // nothing waits for it, so the main thread is not blocked while the database is written.
+        val finished = contentSession?.finish(System.currentTimeMillis())
+        contentSession = null
+        if (finished != null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
+                try {
+                    withTimeoutOrNull(SHUTDOWN_SAVE_TIMEOUT) { saveViewing(finished) }
+                        ?: Timber.w("Saving the viewing session at shutdown timed out")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Could not save the viewing session at shutdown")
+                }
+            }
+        }
         stopPeriodicCheck()
         mainHandler.removeCallbacks(coveredContentCheck)
         hideTransientCover()
@@ -641,14 +669,23 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
             }
         }
         refreshServiceConfig()
-        if (finished == null) return // A covered player already finished its viewing session.
-        timerOverlayManager.hide(finished.startedAtMillis, finished.endedAtMillis)
-        serviceScope.launch { saveViewing(finished) }
+        if (session == null || finished == null) return // A covered player already finished its viewing session.
+        // The timer belongs to the whole visit, not only to its last unsaved piece.
+        timerOverlayManager.hide(session.startedAtMillis, finished.endedAtMillis)
+        launchSaveViewing(finished)
     }
 
-    /** Records viewing time in the session tracker and closes the session with the blocking manager. */
+    /** Saves in the background; cancelling the service scope (on destroy) cannot interrupt a save already started. */
+    private fun launchSaveViewing(finished: FinishedViewing) {
+        serviceScope.launch { withContext(NonCancellable) { saveViewing(finished) } }
+    }
+
+    /**
+     * Records viewing time in the session tracker and closes the period with the blocking manager.
+     * [finished] may be one piece of a longer visit: earlier pieces were already saved, so only this one is added.
+     */
     private suspend fun saveViewing(finished: FinishedViewing) {
-        if (finished.durationMillis >= MIN_TRACKED_DURATION_MILLIS) {
+        if (finished.isTracked) {
             sessionTracker.addToDailyUsage(finished.durationMillis, finished.app.app)
             blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.endedAtMillis)
             // Keep the in-memory usage current, so a limit reached by this visit blocks the next one instantly.
@@ -706,7 +743,7 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
                 stopPeriodicCheck()
                 timerOverlayManager.dismissImmediately()
                 refreshServiceConfig()
-                saveViewing(finished)
+                withContext(NonCancellable) { saveViewing(finished) }
                 scheduleCoveredContentCheck()
             }
         }
@@ -800,7 +837,7 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             if (!current.isCovered) {
                 if (!isBlockingSuppressed &&
-                    blockingManager.onPeriodicCheck(System.currentTimeMillis() - current.startedAtMillis) == BlockingResult.BlockNow
+                    blockingManager.onPeriodicCheck(current.unsavedMillis(System.currentTimeMillis())) == BlockingResult.BlockNow
                 ) {
                     enforceBlocking(current)
                 }
@@ -864,8 +901,11 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         /** Longest time a brief Back cover may stay up if nothing else removes it. */
         const val TRANSIENT_COVER_MAX_MILLIS = 1_500L
 
-        /** Minimum viewing duration required to record usage. Sub-second visits (like immediate blocks) are ignored. */
-        const val MIN_TRACKED_DURATION_MILLIS = 1_000L
+        /** How often a long visit is saved while it continues, so a killed service loses little viewing time. */
+        const val CHECKPOINT_INTERVAL_MILLIS = 15_000L
+
+        /** Longest time the final save after the service is destroyed may take. */
+        val SHUTDOWN_SAVE_TIMEOUT = 2.seconds
 
         /** How long after connecting the service will bring the app back if it was waiting. */
         val WAITING_FOR_ACCESSIBILITY_WINDOW = 5.seconds
