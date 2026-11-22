@@ -74,4 +74,85 @@ class ContentSessionTest {
 
         assertEquals(0L, session.finish(1_000)!!.durationMillis)
     }
+
+    @Test
+    fun `a checkpoint waits for the interval`() {
+        val session = ContentSession(content, 1_000)
+
+        assertNull(session.checkpoint(15_999, 15_000))
+        assertEquals(1_000L, session.savedUntilMillis)
+        assertEquals(1L, session.millisUntilCheckpoint(15_999, 15_000))
+    }
+
+    @Test
+    fun `checkpoints hand out each part of the visit only once`() {
+        val session = ContentSession(content, 1_000)
+
+        val first = session.checkpoint(16_000, 15_000)!!
+        assertEquals(1_000L, first.startedAtMillis)
+        assertEquals(15_000L, first.durationMillis)
+        assertFalse(first.continuesSavedViewing)
+        assertEquals(0L, session.unsavedMillis(16_000))
+        assertEquals(15_000L, session.millisUntilCheckpoint(16_000, 15_000))
+
+        // Asking again at the same time returns nothing, so the same time cannot be saved twice.
+        assertNull(session.checkpoint(16_000, 15_000))
+
+        val second = session.checkpoint(32_000, 15_000)!!
+        assertEquals(16_000L, second.startedAtMillis)
+        assertEquals(16_000L, second.durationMillis)
+        assertTrue(second.continuesSavedViewing)
+
+        val last = session.finish(35_000)!!
+        assertEquals(32_000L, last.startedAtMillis)
+        assertEquals(3_000L, last.durationMillis)
+        assertEquals(34_000L, first.durationMillis + second.durationMillis + last.durationMillis)
+        assertNull(session.checkpoint(60_000, 15_000))
+    }
+
+    @Test
+    fun `covering after a checkpoint returns only the unsaved time`() {
+        val session = ContentSession(content, 1_000)
+        session.checkpoint(16_000, 15_000)!!
+
+        val covered = session.cover(18_000)!!
+        assertEquals(16_000L, covered.startedAtMillis)
+        assertEquals(2_000L, covered.durationMillis)
+        assertNull(session.checkpoint(40_000, 15_000))
+    }
+
+    @Test
+    fun `a short visit is not tracked`() {
+        val finished = ContentSession(content, 1_000).finish(1_999)!!
+
+        assertFalse(finished.isTracked)
+    }
+
+    @Test
+    fun `the short end of a visit saved in parts is still tracked`() {
+        val session = ContentSession(content, 1_000)
+        assertTrue(session.checkpoint(16_000, 15_000)!!.isTracked)
+
+        val tail = session.finish(16_400)!!
+        assertEquals(400L, tail.durationMillis)
+        assertTrue(tail.isTracked)
+    }
+
+    @Test
+    fun `an empty end of a visit saved in parts adds nothing`() {
+        val session = ContentSession(content, 1_000)
+        session.checkpoint(16_000, 15_000)!!
+
+        assertFalse(session.finish(16_000)!!.isTracked)
+    }
+
+    @Test
+    fun `clock moving backwards after a checkpoint records nothing more`() {
+        val session = ContentSession(content, 1_000)
+        session.checkpoint(16_000, 15_000)!!
+
+        assertNull(session.checkpoint(5_000, 15_000))
+        assertEquals(0L, session.unsavedMillis(5_000))
+        assertEquals(0L, session.finish(5_000)!!.durationMillis)
+    }
 }
