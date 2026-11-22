@@ -142,24 +142,29 @@ class BlockedContentOverlayManager @Inject constructor() {
         setBackgroundColor(timerOverlayBackgroundColor.toArgb() or 0xFF000000.toInt())
         // Consume taps and swipes rather than allowing them to reach the video beneath us.
         isClickable = true
-        addView(
-            TextView(context).apply {
-                setText(cover.titleRes)
-                textSize = 24f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                ViewCompat.setAccessibilityHeading(this, true)
-            },
-        )
-        addView(
-            TextView(context).apply {
-                setText(cover.descriptionRes)
-                textSize = 16f
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                setPadding(0, padding / 2, 0, 0)
-            },
-        )
+        // A brief cover shown while Back navigation runs has no text; it only hides the video.
+        cover.titleRes?.let { titleRes ->
+            addView(
+                TextView(context).apply {
+                    setText(titleRes)
+                    textSize = 24f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    ViewCompat.setAccessibilityHeading(this, true)
+                },
+            )
+        }
+        cover.descriptionRes?.let { descriptionRes ->
+            addView(
+                TextView(context).apply {
+                    setText(descriptionRes)
+                    textSize = 16f
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    setPadding(0, padding / 2, 0, 0)
+                },
+            )
+        }
     }
 }

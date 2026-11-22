@@ -19,11 +19,14 @@ package com.scrolless.app.ui.overlay
 import androidx.annotation.StringRes
 import com.scrolless.app.accessibility.ContentBounds
 
-/** Everything needed to draw an overlay over blocked content. */
+/**
+ * Everything needed to draw an overlay over blocked content.
+ * Without a title and description the cover is a blank opaque area, used briefly while Back navigation runs.
+ */
 internal data class ContentCover(
     val target: ContentCoverTarget,
-    @param:StringRes val titleRes: Int,
-    @param:StringRes val descriptionRes: Int,
+    @param:StringRes val titleRes: Int?,
+    @param:StringRes val descriptionRes: Int?,
 ) {
     /**
      * Whether an existing cover view can display this cover.

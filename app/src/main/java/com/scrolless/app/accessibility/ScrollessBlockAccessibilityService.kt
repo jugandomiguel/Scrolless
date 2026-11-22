@@ -27,6 +27,7 @@ import android.view.accessibility.AccessibilityEvent
 import com.scrolless.app.BuildConfig
 import com.scrolless.app.core.accessibility.AccessibilityServiceConnection
 import com.scrolless.app.core.blocking.BlockingManager
+import com.scrolless.app.core.blocking.InstantBlockDecision
 import com.scrolless.app.core.model.BlockOption
 import com.scrolless.app.core.model.BlockableApp
 import com.scrolless.app.core.model.BlockingConfig
@@ -52,6 +53,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
@@ -120,6 +122,10 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     @Inject
     lateinit var blockingManager: BlockingManager
 
+    /** In-memory copy of the blocking state, so known blocks can happen on the detecting event. */
+    @Inject
+    lateinit var instantBlockDecision: InstantBlockDecision
+
     /** Repository for active blocking configurations and rules. */
     @Inject
     lateinit var blockingConfigRepository: BlockingConfigRepository
@@ -176,6 +182,28 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     private var pauseUntilMillis: Long = 0L
 
     private fun isPauseActive(now: Long = System.currentTimeMillis()): Boolean = pauseUntilMillis > now
+
+    /** Whether the saved pause has loaded. Until then a pause may be active that we do not know about. */
+    private var pauseStateLoaded: Boolean = false
+
+    /** Whether the DM preference has loaded. Until then a DM video may be wrongly treated as blocked. */
+    private var allowVideosSentByDmLoaded: Boolean = false
+
+    /** Blocking without waiting for the database is only safe once every exemption is known. */
+    private val canBlockInstantly: Boolean
+        get() = pauseStateLoaded && allowVideosSentByDmLoaded
+
+    /** Prevents a second Back while the first one is still leaving the blocked screen. */
+    private val globalActionThrottle = GlobalActionThrottle()
+
+    /** App whose content is hidden by the brief cover shown around Back navigation, or null if none is shown. */
+    private var transientCoverApp: ResolvedBlockableApp? = null
+
+    /** Removes a brief cover that was never cleared, so it cannot stay over an allowed screen. */
+    private val transientCoverTimeout = Runnable {
+        Timber.d("Brief content cover timed out")
+        hideTransientCover()
+    }
 
     /** True if blocking is currently skipped due to an active pause or DM exemption. */
     private val isBlockingSuppressed: Boolean
@@ -267,6 +295,8 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             // Usage changes constantly; only the mode and its settings need a new handler.
             blockingConfigRepository.observeConfig()
+                // Interval usage changes are needed here too, so keep every saved config in memory.
+                .onEach { instantBlockDecision.onConfigChanged(it) }
                 .map { it.activeOption to it.settings }
                 .distinctUntilChanged()
                 .collect { (option, settings) ->
@@ -274,6 +304,17 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
                     blockingManager.init(option, settings)
                     reconsiderVisibleContent()
                 }
+        }
+
+        // Load today's usage early so a reached daily limit is known before the first video opens.
+        serviceScope.launch {
+            try {
+                instantBlockDecision.refreshDailyUsage { sessionTracker.getDailyUsage() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "Could not preload daily usage; blocking decisions will wait for it")
+            }
         }
 
         serviceScope.launch {
@@ -284,6 +325,7 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             userSettingsStore.getAllowVideosSentByDm().collect {
                 currentAllowVideosSentByDm = it
+                allowVideosSentByDmLoaded = true
                 refreshDetectedContent()
                 reconsiderVisibleContent()
             }
@@ -301,6 +343,7 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             userSettingsStore.getPauseUntil().collect { newPauseUntil ->
                 pauseUntilMillis = newPauseUntil
+                pauseStateLoaded = true
                 reconsiderVisibleContent()
             }
         }
@@ -314,6 +357,8 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     private fun handleTrackedAppExit(reason: String) {
         // A window cover can outlive tracking while its parent animates away. Screen-off clears it.
         if (!powerManager.isInteractive) blockedContentOverlayManager.hide()
+        // A brief Back cover belongs to the screen being left, so it never follows the user out.
+        hideTransientCover()
         if (contentSession == null && currentForegroundBrainRotApp == null) {
             return
         }
@@ -438,6 +483,7 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         )
         stopPeriodicCheck()
         mainHandler.removeCallbacks(coveredContentCheck)
+        hideTransientCover()
         blockedContentOverlayManager.hide()
         timerOverlayManager.cleanup()
         serviceScope.cancel()
@@ -480,10 +526,28 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
 
         startPeriodicCheck()
 
+        // Decide on this same event when the in-memory state already answers, instead of showing the
+        // content while usage loads. The database check below still runs and remains the authority.
+        if (!isBlockingSuppressed) {
+            when (if (canBlockInstantly) instantBlockDecision.shouldBlockNow() else null) {
+                true -> {
+                    Timber.i("Blocking on enter without waiting for usage")
+                    // Main.immediate starts this on the current main-thread pass, without waiting for the
+                    // database. enforceBlocking only suspends after the cover or Back has been applied.
+                    serviceScope.launch { enforceBlocking(session) }
+                }
+
+                // Not known yet: hide Back-blocked content until the check below decides.
+                null -> showTransientCover(session)
+
+                false -> Unit
+            }
+        }
+
         serviceScope.launch {
             // Load timer settings alongside usage so displaying the timer does not add another wait.
             val timerConfig = if (currentTimerOverlayEnabled) async { loadTimerConfig() } else null
-            val dailyUsageMillis = sessionTracker.getDailyUsage()
+            val dailyUsageMillis = instantBlockDecision.refreshDailyUsage { sessionTracker.getDailyUsage() }
             // Share this usage reading with the timer, including during a pause or DM exemption.
             val shouldBlock = blockingManager.onEnterBlockedContent(dailyUsageMillis)
             // Reading the limit may take time. Ignore the answer if the user has already left.
@@ -493,6 +557,9 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
                 enforceBlocking(session)
                 return@launch
             }
+
+            // Viewing is allowed now, so remove the brief cover shown while deciding.
+            hideTransientCover()
 
             // Viewing is allowed now, so remove any cover kept from an earlier visit.
             if (session.app.coverDetector != null) {
@@ -563,6 +630,8 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         val finished = session?.finish(System.currentTimeMillis())
         stopPeriodicCheck()
         mainHandler.removeCallbacks(coveredContentCheck)
+        // The blocked screen is gone (Back finished, user left, or detection ended), so is its brief cover.
+        hideTransientCover()
         // Keep an attached cover during app switching, but remove it when changing screens in the app.
         if (hadCover) {
             if (appLeft) {
@@ -582,6 +651,8 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         if (finished.durationMillis >= MIN_TRACKED_DURATION_MILLIS) {
             sessionTracker.addToDailyUsage(finished.durationMillis, finished.app.app)
             blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.endedAtMillis)
+            // Keep the in-memory usage current, so a limit reached by this visit blocks the next one instantly.
+            instantBlockDecision.refreshDailyUsage { sessionTracker.getDailyUsage() }
         } else {
             // Sub-second duration (such as content immediately blocked on enter) does not count as viewed content.
             blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.startedAtMillis)
@@ -605,7 +676,17 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     private suspend fun enforceBlocking(session: ContentSession) {
         if (viewingSession !== session || isBlockingSuppressed) return
         when (val action = session.content.blockAction) {
-            is ContentBlockAction.PerformGlobalAction -> performGlobalAction(action.action)
+            is ContentBlockAction.PerformGlobalAction -> {
+                // Hide the content while Back animates. Back still runs if the cover cannot be shown.
+                showTransientCover(session)
+                if (globalActionThrottle.tryAcquire(session.app, System.currentTimeMillis())) {
+                    performGlobalAction(action.action)
+                } else {
+                    // The previous Back may still be leaving this screen; check again shortly instead.
+                    Timber.d("Skipping repeated navigation for %s", session.app.packageId)
+                    startPeriodicCheck()
+                }
+            }
 
             ContentBlockAction.CoverVideoRegion -> {
                 // The user may have switched apps while we were waiting for the blocking decision.
@@ -628,6 +709,50 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
                 saveViewing(finished)
                 scheduleCoveredContentCheck()
             }
+        }
+    }
+
+    /**
+     * Shows a blank cover over the detected viewer of an app blocked with Back, reusing the TikTok cover overlay.
+     * Failure only logs: blocking then falls back to Back alone, exactly as before.
+     */
+    private fun showTransientCover(session: ContentSession) {
+        // Apps with their own cover (TikTok) never need this; their cover follows the blocking decision.
+        if (session.app.coverDetector != null || session.content.blockAction !is ContentBlockAction.PerformGlobalAction) return
+        val cover = try {
+            contentScanner.findTransientCover(session.app)
+        } catch (e: RuntimeException) {
+            Timber.w(e, "Could not measure the brief content cover")
+            null
+        }
+        // The viewer may already be gone because Back is running. Keep a cover that is already up for it.
+        if (cover == null) return
+        val shown = try {
+            blockedContentOverlayManager.show(cover)
+        } catch (e: RuntimeException) {
+            Timber.w(e, "Could not show the brief content cover")
+            false
+        }
+        if (!shown) {
+            // A failed show can leave half-created overlay state behind; clear it and rely on Back alone.
+            transientCoverApp = session.app
+            hideTransientCover()
+            return
+        }
+        transientCoverApp = session.app
+        mainHandler.removeCallbacks(transientCoverTimeout)
+        mainHandler.postDelayed(transientCoverTimeout, TRANSIENT_COVER_MAX_MILLIS)
+    }
+
+    /** Removes the brief Back cover if one is shown. Never touches a TikTok cover. */
+    private fun hideTransientCover() {
+        mainHandler.removeCallbacks(transientCoverTimeout)
+        if (transientCoverApp == null) return
+        transientCoverApp = null
+        try {
+            blockedContentOverlayManager.hide()
+        } catch (e: RuntimeException) {
+            Timber.w(e, "Could not remove the brief content cover")
         }
     }
 
@@ -735,6 +860,9 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     private companion object {
         /** Default event debounce timeout in ms (matches android:notificationTimeout in accessibility_service_config.xml). */
         const val DEFAULT_NOTIFICATION_TIMEOUT_MS = 250L
+
+        /** Longest time a brief Back cover may stay up if nothing else removes it. */
+        const val TRANSIENT_COVER_MAX_MILLIS = 1_500L
 
         /** Minimum viewing duration required to record usage. Sub-second visits (like immediate blocks) are ignored. */
         const val MIN_TRACKED_DURATION_MILLIS = 1_000L

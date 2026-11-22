@@ -220,6 +220,36 @@ internal class ContentScanner(
         return appWindows.roots.values.firstNotNullOfOrNull { it?.detectContent(blockableApp, appWindows, activeCover) }
     }
 
+    /**
+     * Finds the area of the viewer that [blockableApp]'s detection rule matched, so a blank cover can hide it
+     * briefly while Back navigation runs. Picks the largest visible matching view.
+     *
+     * @return The cover to show, or null when the rule names no view to measure (e.g. Facebook) or none is visible.
+     */
+    fun findTransientCover(blockableApp: ResolvedBlockableApp): ContentCover? {
+        val viewIds = blockableApp.getDetectionMethod(includeStories()).transientCoverViewIds()
+        if (viewIds.isEmpty()) return null
+        val appWindows = AppWindows(service.windows)
+        for ((window, root) in appWindows.roots) {
+            if (root == null || root.packageName?.toString() != blockableApp.packageId) continue
+            val bounds = viewIds
+                .flatMap { id -> root.findAccessibilityNodeInfosByViewId(blockableApp.getViewId(id)) }
+                .filter(::isNodeVisibleToTheUser)
+                .map { node -> node.coverBounds() }
+                .filter { it.isVisible }
+                .maxByOrNull { it.width.toLong() * it.height }
+                ?: continue
+            // Same coordinates as the TikTok cover: inside the app window on Android 14+, on the screen before.
+            val target = if (useWindowAttachedCover) {
+                ContentCoverTarget.Window(window.id, window.displayId, bounds)
+            } else {
+                ContentCoverTarget.Screen(bounds)
+            }
+            return ContentCover(target, titleRes = null, descriptionRes = null)
+        }
+        return null
+    }
+
     /** Checks for an app window; cover-based apps must also have foreground focus. */
     fun isAppVisible(app: ResolvedBlockableApp): Boolean = AppWindows(service.windows).isVisible(app)
 
