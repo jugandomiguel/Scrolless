@@ -4,7 +4,7 @@
 <p align="center"><img src="art/app_logo.png" alt="Scrolless" height="256"></p>
 <p align="center"> 
   <br/>  
-  <a href="https://opensource.org/license/gpl-3"><img src="https://img.shields.io/badge/License-GPL_3.0-blue.svg?color=3F51B5&style=for-the-badge&label=License&logoColor=000000&labelColor=ececec" alt="License: AGPLv3"></a>
+  <a href="https://opensource.org/license/gpl-3"><img src="https://img.shields.io/badge/License-GPL_3.0-blue.svg?color=3F51B5&style=for-the-badge&label=License&logoColor=000000&labelColor=ececec" alt="License: GPLv3"></a>
   <br/>
   <a href="https://play.google.com/store/apps/details?id=com.scrolless.app"><img src="https://play.google.com/intl/en_us/badges/images/generic/en-play-badge.png" alt="Get it on Google Play" height="70"></a>
   <br/>  
@@ -20,7 +20,7 @@ Since the app requires accessibility permissions, which can have sketchy uses, S
 ## Features
 
 - **Block All**  
-  Instantly block access to all supported platforms, including Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
+  Instantly block access to all supported platforms, including Instagram Reels, Instagram Lite, TikTok, TikTok Lite, YouTube Shorts, Facebook Reels, Facebook Lite, and Snapchat Spotlight and Stories.
 
 - **Daily Limit**  
   Set a daily limit for how long you can spend on supported platforms. Once the limit is reached, access is blocked for the rest of the day.
@@ -35,7 +35,7 @@ Since the app requires accessibility permissions, which can have sketchy uses, S
   Set intervals for usage and breaks, allowing controlled social media access throughout the day.
 
 - **Usage Tracking**   
-  Keep track of how much time you’ve spent on Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
+  Keep track of how much time you’ve spent on Instagram Reels, Instagram Lite, TikTok, TikTok Lite, YouTube Shorts, Facebook Reels, Facebook Lite, and Snapchat.
 
 ## Screenshots
 
@@ -75,4 +75,4 @@ Some icons used in this app are obtained from [Icons8](https://icons8.com).
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=DuarteBarbosaDev/Scrolless&type=Date)](https://star-history.com/#DuarteBarbosaPT/Scrolless&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=DuarteBarbosaDev/Scrolless&type=Date)](https://star-history.com/#DuarteBarbosaDev/Scrolless&Date)
