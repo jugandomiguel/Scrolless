@@ -71,8 +71,10 @@ class SessionTrackerImpl @Inject constructor(
                 )
 
                 // create session for yesterday
+                // Only continue the open segment if it really belongs to yesterday's date
+                val openSessionIsFromYesterday = currentSessionState.sessionStartLocalDate == usageStart.toLocalDate()
                 createSegment(
-                    shouldCreateNewSession = currentSessionState.shouldStartNewSessionOnNextUsage,
+                    shouldCreateNewSession = currentSessionState.shouldStartNewSessionOnNextUsage || !openSessionIsFromYesterday,
                     app = app,
                     sessionTime = sessionTimeYesterday,
                     currentSessionState = currentSessionState,
@@ -90,8 +92,11 @@ class SessionTrackerImpl @Inject constructor(
                 return
             }
 
+            // The open session may belong to a previous day when the app stayed open past midnight
+            //  without going through onAppOpen. Never add today's time to a previous day's segment.
+            val sessionIsFromPreviousDay = currentSessionState.sessionStartLocalDate != usageStart.toLocalDate()
             createSegment(
-                shouldCreateNewSession = currentSessionState.shouldStartNewSessionOnNextUsage,
+                shouldCreateNewSession = currentSessionState.shouldStartNewSessionOnNextUsage || sessionIsFromPreviousDay,
                 app = app,
                 sessionTime = sessionTime,
                 currentSessionState = currentSessionState,
