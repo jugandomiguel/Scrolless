@@ -177,7 +177,7 @@ fun ProgressCard(
         targetValue = if (isLimitReached) {
             progressbar_red_use.copy(alpha = 0.16f)
         } else {
-            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f)
+            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.18f)
         },
         animationSpec = tween(durationMillis = 600),
         label = "limitChipBackground",
@@ -195,7 +195,7 @@ fun ProgressCard(
         targetValue = if (isLimitReached) {
             progressbar_red_use
         } else {
-            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
+            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.9f)
         },
         animationSpec = tween(durationMillis = 600),
         label = "limitChipTextColor",
@@ -242,7 +242,7 @@ fun ProgressCard(
                             .fillMaxWidth(),
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -275,7 +275,7 @@ fun ProgressCard(
                         AutoResizingText(
                             text = resetText,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.65f),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.65f),
                             textAlign = TextAlign.Center,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
