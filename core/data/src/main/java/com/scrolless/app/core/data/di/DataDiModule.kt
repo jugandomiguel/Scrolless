@@ -72,7 +72,8 @@ object DataDiModule {
                 ScrollessDatabase.MIGRATION_9_10,
                 ScrollessDatabase.MIGRATION_10_11,
                 ScrollessDatabase.MIGRATION_11_12,
-            ).fallbackToDestructiveMigration(true) // Not recommended but for now it shouldn't matter
+            // No migration 1 -> 2 exists (schema v1 only lived in Oct-Nov 2025 dev builds), so only v1 may be wiped.
+            ).fallbackToDestructiveMigrationFrom(true, 1)
             .fallbackToDestructiveMigrationOnDowngrade(true).addCallback(
                 object : RoomDatabase.Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
