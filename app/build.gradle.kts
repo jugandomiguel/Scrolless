@@ -170,14 +170,12 @@ dependencies {
     androidTestImplementation(composeBom)
     implementation(libs.androidx.compose.animation)
 
-    implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.collections.immutable)
     implementation(libs.kotlinx.serialization.core)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
-    implementation(libs.androidx.palette)
 
     // Dependency injection
     implementation(libs.androidx.hilt.navigation.compose)
@@ -191,9 +189,6 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material3.adaptive)
-    implementation(libs.androidx.compose.material3.adaptive.layout)
-    implementation(libs.androidx.compose.material3.adaptive.navigation)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
@@ -205,10 +200,7 @@ dependencies {
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.navigation3.viewmodel)
 
-    implementation(libs.androidx.window)
-    implementation(libs.androidx.window.core)
 
-    implementation(libs.coil.kt.compose)
 
     add("playImplementation", libs.android.review)
     add("playImplementation", libs.android.review.ktx)

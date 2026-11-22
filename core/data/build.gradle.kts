@@ -79,11 +79,9 @@ kotlin {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.compose.runtime)
 
     // Image loading
-    implementation(libs.coil.kt.compose)
 
     // Compose
     val composeBom = platform(libs.androidx.compose.bom)
