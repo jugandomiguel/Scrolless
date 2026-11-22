@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.ViewCompat
 import com.scrolless.app.designsystem.theme.timerOverlayBackgroundColor
 import javax.inject.Inject
+import timber.log.Timber
 
 /**
  * Manages the overlay covering the blocked video or screen area.
@@ -61,7 +62,11 @@ class BlockedContentOverlayManager @Inject constructor() {
         // Accessibility sends many identical events. Leave an unchanged cover alone.
         if (!target.needsUpdate(shownCover?.target, refreshAttachment)) return true
         when (target) {
-            is ContentCoverTarget.Screen -> showScreenCover(cover)
+            is ContentCoverTarget.Screen -> if (!showScreenCover(cover)) {
+                // Clear the half-shown state so the next cover starts with a new view.
+                hide()
+                return false
+            }
 
             is ContentCoverTarget.Window -> {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
@@ -83,9 +88,12 @@ class BlockedContentOverlayManager @Inject constructor() {
         if (shownCover?.target?.keepOnAppExit(screenInteractive) != true) hide()
     }
 
-    /** Draws the legacy cover using screen coordinates on Android versions without window attachment. */
+    /**
+     * Draws the legacy cover using screen coordinates on Android versions without window attachment.
+     * Returns false if the window manager refused the cover, for example because the service is disconnecting.
+     */
     @SuppressLint("RtlHardcoded")
-    private fun showScreenCover(cover: ContentCover) {
+    private fun showScreenCover(cover: ContentCover): Boolean {
         val bounds = cover.target.bounds
 
         // Keep app focus and accept touches only inside this rectangle. Native tabs stay usable.
@@ -111,25 +119,45 @@ class BlockedContentOverlayManager @Inject constructor() {
         }
 
         val currentView = view
-        if (currentView == null) {
-            val newView = createCoverView(service, cover)
-            windowManager.addView(newView, params)
-            view = newView
-        } else {
-            windowManager.updateViewLayout(currentView, params)
+        return try {
+            if (currentView == null) {
+                val newView = createCoverView(service, cover)
+                // Remember the view before adding it, so hide() also removes one that was added partly.
+                view = newView
+                windowManager.addView(newView, params)
+            } else {
+                windowManager.updateViewLayout(currentView, params)
+            }
+            true
+        } catch (error: RuntimeException) {
+            // BadTokenException, InvalidDisplayException or IllegalArgumentException (view no longer attached).
+            Timber.e(error, "Unable to show screen content cover")
+            false
         }
     }
 
     /** Removes every cover and clears cached state so the next one is created safely. */
     fun hide() {
         // Remove both possible overlay types, including a cover left attached after leaving the app.
-        view?.let(windowManager::removeViewImmediate)
+        val oldView = view
+        // Clear the reference first, so a failed removal cannot leave a stale view to update later.
         view = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            windowOverlay?.hide()
+        try {
+            oldView?.let(windowManager::removeViewImmediate)
+        } catch (error: RuntimeException) {
+            // IllegalArgumentException when the view was never attached or is already gone.
+            Timber.w(error, "Unable to remove screen content cover")
         }
+        val oldWindowOverlay = windowOverlay
         windowOverlay = null
         shownCover = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                oldWindowOverlay?.hide()
+            } catch (error: RuntimeException) {
+                Timber.w(error, "Unable to remove window content cover")
+            }
+        }
     }
 
     /** Builds the opaque, touch-consuming message shown in place of a blocked video. */
