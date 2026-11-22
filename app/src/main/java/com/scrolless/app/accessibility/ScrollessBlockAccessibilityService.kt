@@ -50,6 +50,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
@@ -195,6 +197,9 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
     private val canBlockInstantly: Boolean
         get() = pauseStateLoaded && allowVideosSentByDmLoaded
 
+    /** Stops repeating failures from running on every event until the screen changes. */
+    private val eventFailureGuard = EventFailureGuard()
+
     /** Prevents a second Back while the first one is still leaving the blocked screen. */
     private val globalActionThrottle = GlobalActionThrottle()
 
@@ -311,11 +316,15 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
                 .onEach { instantBlockDecision.onConfigChanged(it) }
                 .map { it.activeOption to it.settings }
                 .distinctUntilChanged()
-                .collect { (option, settings) ->
-                    Timber.d("Blocking option changed: %s", option)
-                    blockingManager.init(option, settings)
-                    reconsiderVisibleContent()
+                .onEach { (option, settings) ->
+                    applySettingSafely("blocking option") {
+                        Timber.d("Blocking option changed: %s", option)
+                        blockingManager.init(option, settings)
+                        reconsiderVisibleContent()
+                    }
                 }
+                .catch { Timber.e(it, "Stopped following blocking option changes") }
+                .collect()
         }
 
         // Load today's usage early so a reached daily limit is known before the first video opens.
@@ -330,34 +339,66 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
         }
 
         serviceScope.launch {
-            userSettingsStore.getTimerOverlayEnabled().collect { currentTimerOverlayEnabled = it }
+            userSettingsStore.getTimerOverlayEnabled()
+                .onEach { currentTimerOverlayEnabled = it }
+                .catch { Timber.e(it, "Stopped following the timer overlay setting") }
+                .collect()
         }
 
         // Re-detect an open video when the DM preference changes, then apply the new decision.
         serviceScope.launch {
-            userSettingsStore.getAllowVideosSentByDm().collect {
-                currentAllowVideosSentByDm = it
-                allowVideosSentByDmLoaded = true
-                refreshDetectedContent()
-                reconsiderVisibleContent()
-            }
+            userSettingsStore.getAllowVideosSentByDm()
+                .onEach {
+                    applySettingSafely("DM videos") {
+                        currentAllowVideosSentByDm = it
+                        allowVideosSentByDmLoaded = true
+                        refreshDetectedContent()
+                        reconsiderVisibleContent()
+                    }
+                }
+                .catch { Timber.e(it, "Stopped following the DM videos setting") }
+                .collect()
         }
 
         serviceScope.launch {
-            userSettingsStore.getIncludeStories().collect {
-                currentIncludeStories = it
-                refreshDetectedContent()
-                reconsiderVisibleContent()
-            }
+            userSettingsStore.getIncludeStories()
+                .onEach {
+                    applySettingSafely("Stories") {
+                        currentIncludeStories = it
+                        refreshDetectedContent()
+                        reconsiderVisibleContent()
+                    }
+                }
+                .catch { Timber.e(it, "Stopped following the Stories setting") }
+                .collect()
         }
 
         // Apply a pause immediately, even if the app has not sent a new screen event.
         serviceScope.launch {
-            userSettingsStore.getPauseUntil().collect { newPauseUntil ->
-                pauseUntilMillis = newPauseUntil
-                pauseStateLoaded = true
-                reconsiderVisibleContent()
-            }
+            userSettingsStore.getPauseUntil()
+                .onEach { newPauseUntil ->
+                    applySettingSafely("pause") {
+                        pauseUntilMillis = newPauseUntil
+                        pauseStateLoaded = true
+                        reconsiderVisibleContent()
+                    }
+                }
+                .catch { Timber.e(it, "Stopped following the pause setting") }
+                .collect()
+        }
+    }
+
+    /**
+     * Applies one setting change. A failure skips only this change, so the setting is still followed;
+     * errors from the setting's flow itself end that flow and are logged by its `catch`.
+     */
+    private inline fun applySettingSafely(setting: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Could not apply the %s setting change", setting)
         }
     }
 
@@ -415,6 +456,27 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
      * @param event The accessibility event emitted by Android.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val isWindowChange = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+        if (!eventFailureGuard.shouldProcess(isWindowChange)) return
+        try {
+            processAccessibilityEvent(event)
+            eventFailureGuard.onSuccess()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // An uncaught error here would stop the whole service, and with it every block.
+            Timber.e(e, "Failed to process accessibility event (type=%d, package=%s)", event.eventType, event.packageName)
+            if (eventFailureGuard.onFailure()) {
+                Timber.e(
+                    "%d accessibility events failed in a row; skipping events until the next window change",
+                    eventFailureGuard.consecutiveFailures,
+                )
+            }
+        }
+    }
+
+    private fun processAccessibilityEvent(event: AccessibilityEvent) {
         if (!powerManager.isInteractive) {
             handleTrackedAppExit("screen is off while receiving accessibility event")
             return
