@@ -18,11 +18,15 @@ package com.scrolless.app.core.blocking.time
 
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 
 interface TimeProvider {
     fun currentTimeInMillis(): Long
     fun localDateNow(): LocalDate
     fun localDateTimeNow(): LocalDateTime
+
+    /** Epoch millis of 00:00 of [localDateNow], in the system zone. */
+    fun startOfTodayMillis(): Long = localDateNow().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 }
 
 object SystemTimeProvider : TimeProvider {
