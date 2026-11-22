@@ -309,4 +309,38 @@ class SessionTrackerTest : BaseTest() {
         // The second segment should be the duration of secondSessionDuration
         assertEquals(secondSessionDuration, capturedSegments[1].durationMillis)
     }
+
+    @Test
+    fun `app left open across midnight puts the new batch in a new segment dated today`() = runTest(testDispatcher) {
+        val capturedSegments = mutableListOf<SessionSegment>()
+        coEvery { store.addSessionSegment(capture(capturedSegments)) } returns 1L
+        coEvery { store.updateSessionSegmentDuration(any(), any()) } returns Unit
+
+        val initialNow = timeProvider.localDateTimeNow()
+        val at2350 = initialNow.toLocalDate().atTime(23, 50)
+        delay(Duration.between(initialNow, at2350).toMillis().milliseconds)
+
+        val app = BlockableApp.REELS
+        sessionTracker.onAppOpen(app)
+
+        // 23:50 - 23:55 watched
+        val fiveMinutes = 5 * 60 * 1000L
+        delay(fiveMinutes.milliseconds)
+        sessionTracker.addToDailyUsage(fiveMinutes, app)
+
+        // App stays open (no onAppOpen); 00:10 - 00:15 watched on the next day
+        val at0010 = at2350.toLocalDate().plusDays(1).atTime(0, 10)
+        delay(Duration.between(timeProvider.localDateTimeNow(), at0010).toMillis().milliseconds)
+        delay(fiveMinutes.milliseconds)
+        sessionTracker.addToDailyUsage(fiveMinutes, app)
+
+        assertEquals(2, capturedSegments.size)
+        assertEquals(fiveMinutes, capturedSegments[0].durationMillis)
+        assertEquals(fiveMinutes, capturedSegments[1].durationMillis)
+        assertEquals(at2350.toLocalDate(), capturedSegments[0].startDateTime.toLocalDate())
+        assertEquals(at0010, capturedSegments[1].startDateTime)
+        coVerify(exactly = 0) {
+            store.updateSessionSegmentDuration(any(), any())
+        }
+    }
 }
