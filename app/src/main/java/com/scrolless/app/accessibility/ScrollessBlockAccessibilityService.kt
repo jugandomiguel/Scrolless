@@ -747,14 +747,21 @@ class ScrollessBlockAccessibilityService : AccessibilityService() {
      * [finished] may be one piece of a longer visit: earlier pieces were already saved, so only this one is added.
      */
     private suspend fun saveViewing(finished: FinishedViewing) {
-        if (finished.isTracked) {
-            sessionTracker.addToDailyUsage(finished.durationMillis, finished.app.app)
-            blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.endedAtMillis)
-            // Keep the in-memory usage current, so a limit reached by this visit blocks the next one instantly.
-            instantBlockDecision.refreshDailyUsage { sessionTracker.getDailyUsage() }
-        } else {
-            // Sub-second duration (such as content immediately blocked on enter) does not count as viewed content.
-            blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.startedAtMillis)
+        // A database failure must not cut the limit checks of the visit or stop the service, so it is only logged.
+        try {
+            if (finished.isTracked) {
+                sessionTracker.addToDailyUsage(finished.durationMillis, finished.app.app)
+                blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.endedAtMillis)
+                // Keep the in-memory usage current, so a limit reached by this visit blocks the next one instantly.
+                instantBlockDecision.refreshDailyUsage { sessionTracker.getDailyUsage() }
+            } else {
+                // Sub-second duration (such as content immediately blocked on enter) does not count as viewed content.
+                blockingManager.onExitBlockedContent(finished.startedAtMillis, finished.startedAtMillis)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Could not save viewing %d..%d", finished.startedAtMillis, finished.endedAtMillis)
         }
     }
 
